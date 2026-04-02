@@ -501,6 +501,7 @@ def _restore_s3_segment(s3_key, s3_bucket, volume_letter, region,
     """
     import zstandard
     import boto3
+    import botocore.exceptions
 
     # Parse key: {prefix}/{offset}.{checksum}.{block_count}.zstd
     key_name = s3_key.split("/", 1)[1] if "/" in s3_key else s3_key
@@ -511,19 +512,38 @@ def _restore_s3_segment(s3_key, s3_bucket, volume_letter, region,
 
     session = boto3.Session(profile_name=profile)
     s3 = session.client("s3", region_name=region, endpoint_url=endpoint_url)
-    response = s3.get_object(Bucket=s3_bucket, Key=s3_key)
-    compressed = response["Body"].read()
 
-    dctx = zstandard.ZstdDecompressor()
-    raw = dctx.decompress(compressed)
+    # Outer loop: retry download + checksum verification indefinitely on mismatch.
+    while True:
+        # Network retry loop — retry indefinitely on transient errors.
+        retry_count = 0
+        while True:
+            try:
+                response = s3.get_object(Bucket=s3_bucket, Key=s3_key)
+                compressed = response["Body"].read()
+                break
+            except botocore.exceptions.NoCredentialsError:
+                print(
+                    "Unable to locate credentials. Run 'aws configure'.",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
+            except Exception:
+                retry_count += 1
+                time.sleep(min(2 ** retry_count, 30))
 
-    h = hashlib.sha256()
-    h.update(raw)
-    actual_checksum = urlsafe_b64encode(h.digest()).decode()
-    if actual_checksum != expected_checksum:
-        raise ValueError(
-            f"Checksum mismatch for segment at offset {offset}: "
-            f"expected {expected_checksum}, got {actual_checksum}"
+        dctx = zstandard.ZstdDecompressor()
+        raw = dctx.decompress(compressed)
+
+        h = hashlib.sha256()
+        h.update(raw)
+        actual_checksum = urlsafe_b64encode(h.digest()).decode()
+        if actual_checksum == expected_checksum:
+            break
+        # Checksum mismatch — re-download indefinitely (matches FSP behaviour).
+        print(
+            f"Checksum mismatch for segment at offset {offset}, retrying.",
+            file=sys.stderr,
         )
 
     handle = open_volume_for_write(volume_letter)
@@ -575,6 +595,7 @@ def _upload_vss_segment(shadow_device_path, segment, snapshot_id, vol_size_gb,
     """
     import zstandard
     import boto3
+    import botocore.exceptions
 
     offset = segment[0]["BlockIndex"]
 
@@ -607,6 +628,12 @@ def _upload_vss_segment(shadow_device_path, segment, snapshot_id, vol_size_gb,
         try:
             s3.put_object(Body=compressed, Bucket=s3_bucket, Key=s3_key)
             break
+        except botocore.exceptions.NoCredentialsError:
+            print(
+                "Unable to locate credentials. Run 'aws configure'.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
         except Exception:
             retry_count += 1
             time.sleep(min(2 ** retry_count, 30))
@@ -659,7 +686,7 @@ def vss2s3(s3_bucket, volume_letter=None, destination_region=None,
     _require_windows()
     _require_admin()
 
-    from fsp import chunk_and_align
+    from fsp import chunk_and_align, validate_s3_bucket
     from joblib import Parallel, delayed
     from singleton import SingletonClass
     singleton = SingletonClass()
@@ -671,6 +698,13 @@ def vss2s3(s3_bucket, volume_letter=None, destination_region=None,
         or "us-east-1"
     )
     num_jobs = singleton.NUM_JOBS or 16
+
+    # Ensure singleton fields used by validate_s3_bucket are set.
+    singleton.AWS_S3_PROFILE = profile or "default"
+    singleton.AWS_S3_ENDPOINT_URL = endpoint_url
+
+    # S3 bucket inaccessible — reuse FSP's validate_s3_bucket() (needs write).
+    validate_s3_bucket(s3_region, False, True)
 
     # ------------------------------------------------------------------
     # Volume selection
@@ -879,8 +913,11 @@ def s3tovss(snapshot_prefix, s3_bucket, volume_letter=None,
     _require_windows()
     _require_admin()
 
+    from fsp import validate_s3_bucket
     from joblib import Parallel, delayed
     from singleton import SingletonClass
+    import boto3
+    import botocore.exceptions
     singleton = SingletonClass()
 
     s3_region = (
@@ -890,6 +927,13 @@ def s3tovss(snapshot_prefix, s3_bucket, volume_letter=None,
         or "us-east-1"
     )
     num_jobs = singleton.NUM_JOBS or 16
+
+    # Ensure singleton fields used by validate_s3_bucket are set.
+    singleton.AWS_S3_PROFILE = profile or "default"
+    singleton.AWS_S3_ENDPOINT_URL = endpoint_url
+
+    # S3 bucket inaccessible — reuse FSP's validate_s3_bucket() (needs read).
+    validate_s3_bucket(s3_region, True, False)
 
     # ------------------------------------------------------------------
     # Parse snapshot volume size from prefix ({snapshot_id}.{vol_gb})
@@ -971,18 +1015,26 @@ def s3tovss(snapshot_prefix, s3_bucket, volume_letter=None,
     # ------------------------------------------------------------------
     # List S3 segments
     # ------------------------------------------------------------------
-    import boto3
-    session = boto3.Session(profile_name=profile)
-    s3_client = session.client("s3", region_name=s3_region, endpoint_url=endpoint_url)
-
-    prefix = f"{snapshot_prefix}/"
-    paginator = s3_client.get_paginator("list_objects_v2")
-    s3_keys = []
-    for page in paginator.paginate(Bucket=s3_bucket, Prefix=prefix):
-        for obj in page.get("Contents", []):
-            key = obj["Key"]
-            if key.endswith(".zstd"):
-                s3_keys.append(key)
+    try:
+        session = boto3.Session(profile_name=profile)
+        s3_client = session.client("s3", region_name=s3_region, endpoint_url=endpoint_url)
+        prefix = f"{snapshot_prefix}/"
+        paginator = s3_client.get_paginator("list_objects_v2")
+        s3_keys = []
+        for page in paginator.paginate(Bucket=s3_bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                key = obj["Key"]
+                if key.endswith(".zstd"):
+                    s3_keys.append(key)
+    except botocore.exceptions.NoCredentialsError:
+        print(
+            "Unable to locate credentials. Run 'aws configure'.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except Exception as exc:
+        print(f"Error: Failed to list S3 objects: {exc}", file=sys.stderr)
+        sys.exit(1)
 
     if not s3_keys:
         print(
