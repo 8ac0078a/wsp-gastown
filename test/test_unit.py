@@ -19,11 +19,13 @@ import unittest
 import sys
 import os
 import subprocess
+from unittest.mock import patch, MagicMock
 
 sys.path.insert(1, f'{os.path.dirname(os.path.realpath(__file__))}/../src') #makes source code testable
 
 from main import install_dependencies, dependency_checker, version_cmp
 from snapshot_factory import generate_pattern_snapshot, check_pattern
+import vss
 
 """Method to expose test cases for dependency checker and installer to test runner via a test suite."""
 def DependencyCheckerSuite():
@@ -346,3 +348,100 @@ class TestSnapshotFactory(unittest.TestCase):
       TEST_MATRIX.append(test_case)
 
     self.run_test_matrix(TEST_MATRIX)
+
+"""Method to expose VSS shadow copy unit tests to the test runner."""
+def VssShadowSuite():
+  suite = unittest.TestSuite()
+
+  suite.addTest(TestVssShadow('test_create_parses_valid_output'))
+  suite.addTest(TestVssShadow('test_create_strips_drive_letter_suffix'))
+  suite.addTest(TestVssShadow('test_create_fails_on_nonzero_returncode'))
+  suite.addTest(TestVssShadow('test_create_fails_on_missing_id'))
+  suite.addTest(TestVssShadow('test_create_fails_on_missing_device'))
+  suite.addTest(TestVssShadow('test_delete_success'))
+  suite.addTest(TestVssShadow('test_delete_nonzero_is_warning_not_exit'))
+
+  return suite
+
+
+VSSADMIN_CREATE_OUTPUT = (
+    "vssadmin 1.1 - Volume Shadow Copy Service administrative command-line tool\n"
+    "(C) Copyright 2001-2013 Microsoft Corp.\n"
+    "\n"
+    "Successfully created shadow copy for 'D:\\'\n"
+    "    Shadow Copy ID: {AB12CD34-5678-90EF-ABCD-1234567890AB}\n"
+    "    Shadow Copy Volume Name: \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy3\n"
+)
+
+
+class TestVssShadow(unittest.TestCase):
+    """Unit tests for create_vss_shadow and delete_vss_shadow in vss.py.
+
+    subprocess.run is mocked so no Windows environment is required.
+    """
+
+    def _mock_run(self, stdout, returncode=0):
+        m = MagicMock()
+        m.returncode = returncode
+        m.stdout = stdout
+        m.stderr = ""
+        return m
+
+    @patch("vss.subprocess.run")
+    def test_create_parses_valid_output(self, mock_run):
+        mock_run.return_value = self._mock_run(VSSADMIN_CREATE_OUTPUT)
+        shadow_id, shadow_device = vss.create_vss_shadow("D")
+        self.assertEqual(shadow_id, "{AB12CD34-5678-90EF-ABCD-1234567890AB}")
+        self.assertEqual(
+            shadow_device,
+            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy3",
+        )
+
+    @patch("vss.subprocess.run")
+    def test_create_strips_drive_letter_suffix(self, mock_run):
+        """Passing 'D:' (with colon) should produce the same result as 'D'."""
+        mock_run.return_value = self._mock_run(VSSADMIN_CREATE_OUTPUT)
+        shadow_id, _ = vss.create_vss_shadow("D:")
+        self.assertEqual(shadow_id, "{AB12CD34-5678-90EF-ABCD-1234567890AB}")
+        # Verify the command used 'D:' (letter + colon) in the /for= argument
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("/for=D:", call_args)
+
+    @patch("vss.subprocess.run")
+    def test_create_fails_on_nonzero_returncode(self, mock_run):
+        mock_run.return_value = self._mock_run("", returncode=1)
+        with self.assertRaises(SystemExit):
+            vss.create_vss_shadow("D")
+
+    @patch("vss.subprocess.run")
+    def test_create_fails_on_missing_id(self, mock_run):
+        output = "Shadow Copy Volume Name: \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy3\n"
+        mock_run.return_value = self._mock_run(output)
+        with self.assertRaises(SystemExit):
+            vss.create_vss_shadow("D")
+
+    @patch("vss.subprocess.run")
+    def test_create_fails_on_missing_device(self, mock_run):
+        output = "Shadow Copy ID: {AB12CD34-5678-90EF-ABCD-1234567890AB}\n"
+        mock_run.return_value = self._mock_run(output)
+        with self.assertRaises(SystemExit):
+            vss.create_vss_shadow("D")
+
+    @patch("vss.subprocess.run")
+    def test_delete_success(self, mock_run):
+        mock_run.return_value = self._mock_run("Successfully deleted 1 shadow copies.\n")
+        # Should complete without raising
+        vss.delete_vss_shadow("{AB12CD34-5678-90EF-ABCD-1234567890AB}")
+        call_args = mock_run.call_args[0][0]
+        self.assertIn("/quiet", call_args)
+        self.assertIn("/shadow={AB12CD34-5678-90EF-ABCD-1234567890AB}", call_args)
+
+    @patch("vss.subprocess.run")
+    def test_delete_nonzero_is_warning_not_exit(self, mock_run):
+        """delete_vss_shadow should warn but NOT sys.exit on failure."""
+        mock_run.return_value = self._mock_run("", returncode=1)
+        # Must not raise SystemExit -- failure is a warning only
+        try:
+            vss.delete_vss_shadow("{AB12CD34-5678-90EF-ABCD-1234567890AB}")
+        except SystemExit:
+            self.fail("delete_vss_shadow raised SystemExit on non-zero return code")

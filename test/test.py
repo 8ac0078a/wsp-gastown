@@ -121,6 +121,7 @@ def parse_args(args):
     parser.add_argument('--small_canary', default=False, action='store_true', help='Run tests on small data size for a sanity check that script is functional')
     parser.add_argument('--dependency_checker', default=False, action='store_true', help="Run tests to ensure that script dependency checker and installer is working correctly")
     parser.add_argument('--snapshot_factory_checker', default=False, action='store_true', help="Run tests to ensure that script to generate and check test snapshots is working correctly")
+    parser.add_argument('--vss_shadow', default=False, action='store_true', help='Run unit tests for VSS shadow copy create/delete wrapper')
 
     return parser.parse_args(args)
 
@@ -148,6 +149,11 @@ if __name__ == '__main__':
     if to_test.all_tests or to_test.snapshot_factory_checker:
         print("\nTesting FSP with Small Canary Tests:")
         result = runner.run(test_unit.SnapshotFactorySuite())
+        print(f"{result.testsRun} tests were run - {len(result.skipped)} tests skipped.")
+        print(f"{len(result.errors)} Errors. {len(result.failures)} Failures")
+    if to_test.all_tests or to_test.vss_shadow:
+        print("\nTesting VSS Shadow Copy Wrapper:")
+        result = runner.run(test_unit.VssShadowSuite())
         print(f"{result.testsRun} tests were run - {len(result.skipped)} tests skipped.")
         print(f"{len(result.errors)} Errors. {len(result.failures)} Failures")
     if to_test.all_tests or to_test.small_canary:
