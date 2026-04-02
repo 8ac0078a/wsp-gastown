@@ -71,3 +71,8 @@ cover/
 
 # Built Visual Studio Code Extensions
 *.vsix
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key

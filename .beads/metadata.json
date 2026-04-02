@@ -1,0 +1,8 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "server",
+  "dolt_server_port": 3307,
+  "dolt_database": "wsp",
+  "project_id": "e448e2a5-25d0-42d4-a3ad-16a41f5a1f8a"
+}
