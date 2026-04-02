@@ -213,6 +213,8 @@ def arg_parse(args):
     getfroms3_parser = subparsers.add_parser('getfroms3', help='Transfers a Snapshot stored in a customer-owned S3 Bucket to a new EBS snapshot')
     multiclone_parser = subparsers.add_parser('multiclone', help='Same functionality as “download”, but writing to multiple destinations in parallel')
     fanout_parser = subparsers.add_parser('fanout', help='Upload from file to multiple snapshot(s), provided a list of regions')
+    vss2s3_parser = subparsers.add_parser('vss2s3', help='Create a VSS shadow copy of a Windows volume and upload it to S3 (Windows only)')
+    s3tovss_parser = subparsers.add_parser('s3tovss', help='Restore a VSS snapshot from S3 to a Windows volume (Windows only)')
 
     # add CLI argument options for each command
     list_parser.add_argument('snapshot', help='Snapshot ID to list size of')
@@ -258,6 +260,23 @@ def arg_parse(args):
 
     fanout_parser.add_argument('device_path', help='File path to raw device for fanout snapshot distributution')
     fanout_parser.add_argument('destinations', help='File path to a .txt file listing all regions the snapshot distributution on separate lines')
+
+    vss2s3_parser.add_argument('s3Bucket', help='Target S3 bucket name')
+    vss2s3_parser.add_argument('--volume', default=None, help='Volume drive letter to back up (e.g. D). If omitted, user is prompted.')
+    vss2s3_parser.add_argument("-d", "--destination_region", default=None, help="AWS region where the S3 bucket exists. (default: origin region)")
+    vss2s3_parser.add_argument("-e", "--endpoint_url", default=None, help="S3 Endpoint URL, for custom destinations such as Snowball Edge. (default: none)")
+    vss2s3_parser.add_argument("-p", "--profile", default="default", help="AWS CLI profile name. (default: default)")
+    vss2s3_parser.add_argument("--resume", default=False, action="store_true", help="Resume a previously interrupted upload.")
+    vss2s3_parser.add_argument("--log", default=None, metavar="FILE", help="Write detailed log to FILE.")
+
+    s3tovss_parser.add_argument('snapshot_prefix', help='S3 prefix of the snapshot to restore (e.g. vss-20260402-D.500)')
+    s3tovss_parser.add_argument('s3Bucket', help='Source S3 bucket name')
+    s3tovss_parser.add_argument('--volume', default=None, help='Target volume drive letter (e.g. E). If omitted, user is prompted.')
+    s3tovss_parser.add_argument("-d", "--destination_region", default=None, help="AWS region where the S3 bucket exists. (default: origin region)")
+    s3tovss_parser.add_argument("-e", "--endpoint_url", default=None, help="S3 Endpoint URL, for custom destinations such as Snowball Edge. (default: none)")
+    s3tovss_parser.add_argument("-p", "--profile", default="default", help="AWS CLI profile name. (default: default)")
+    s3tovss_parser.add_argument("--resume", default=False, action="store_true", help="Resume a previously interrupted restore.")
+    s3tovss_parser.add_argument("--log", default=None, metavar="FILE", help="Write detailed log to FILE.")
 
     args = parser.parse_args(args)
     return args
@@ -533,6 +552,31 @@ if __name__ == "__main__":
 
     elif command == "fanout":
         fanout(device_path=args.device_path, destination_regions=args.destinations)
+
+    elif command == "vss2s3":
+        import platform
+        if platform.system() != "Windows":
+            print("vss2s3 is only supported on Windows.", file=sys.stderr)
+            sys.exit(1)
+        from vss import resolve_volume
+        if not args.endpoint_url is None:
+            singleton.AWS_S3_ENDPOINT_URL = args.endpoint_url
+        if not args.profile is None:
+            singleton.AWS_S3_PROFILE = args.profile
+        singleton.VSS_VOLUME = resolve_volume(args.volume)
+
+    elif command == "s3tovss":
+        import platform
+        if platform.system() != "Windows":
+            print("s3tovss is only supported on Windows.", file=sys.stderr)
+            sys.exit(1)
+        from vss import resolve_volume
+        if not args.endpoint_url is None:
+            singleton.AWS_S3_ENDPOINT_URL = args.endpoint_url
+        if not args.profile is None:
+            singleton.AWS_S3_PROFILE = args.profile
+        singleton.VSS_VOLUME = resolve_volume(args.volume)
+
     else:
         print("Unknown command: %s" % command)
         sys.exit(127) # Exit code for command not found. Script cannot run

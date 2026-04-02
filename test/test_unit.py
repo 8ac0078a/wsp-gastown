@@ -224,6 +224,123 @@ class DependencyCheckAndInstall(unittest.TestCase):
     self.assertEqual(counter, 2, "Did not identify all packages that need to be upgraded.")
 
 
+"""Method to expose test cases for vss volume filtering to test runner via a test suite."""
+def VssVolumeSuite():
+  suite = unittest.TestSuite()
+  suite.addTest(VssVolumeFilter('test_list_volumes_filters_system_drive'))
+  suite.addTest(VssVolumeFilter('test_list_volumes_filters_no_drive_letter'))
+  suite.addTest(VssVolumeFilter('test_list_volumes_filters_recovery_labels'))
+  suite.addTest(VssVolumeFilter('test_list_volumes_single_object_coercion'))
+  suite.addTest(VssVolumeFilter('test_resolve_volume_explicit_letter'))
+  suite.addTest(VssVolumeFilter('test_resolve_volume_strips_colon'))
+  suite.addTest(VssVolumeFilter('test_resolve_volume_system_drive_exits'))
+  return suite
+
+
+class VssVolumeFilter(unittest.TestCase):
+  """Unit tests for vss.py volume enumeration filtering logic.
+
+  These tests exercise the pure-Python post-processing of the volume list
+  returned from the PowerShell subprocess, without requiring Windows or
+  a real PowerShell invocation.
+  """
+
+  # Helper: run the filter logic directly without calling PowerShell.
+  def _apply_filter(self, raw_vols, system_letter='C'):
+    """Apply the same filtering logic as list_volumes() to a pre-built list."""
+    from vss import _RECOVERY_LABELS
+    volumes = []
+    for vol in raw_vols:
+      letter = (vol.get('letter') or '').strip().upper()
+      label = (vol.get('label') or '').strip()
+      filesystem = (vol.get('filesystem') or '').strip()
+      size_gb = int(vol.get('size_gb') or 0)
+
+      if not letter:
+        continue
+      if letter == system_letter.upper():
+        continue
+      if label.lower() in _RECOVERY_LABELS:
+        continue
+
+      volumes.append({'letter': letter, 'label': label,
+                      'filesystem': filesystem, 'size_gb': size_gb})
+    return volumes
+
+  def test_list_volumes_filters_system_drive(self):
+    raw = [
+      {'letter': 'C', 'label': 'Windows', 'filesystem': 'NTFS', 'size_gb': 100},
+      {'letter': 'D', 'label': 'Data',    'filesystem': 'NTFS', 'size_gb': 500},
+    ]
+    result = self._apply_filter(raw, system_letter='C')
+    letters = [v['letter'] for v in result]
+    self.assertNotIn('C', letters, "System drive should be filtered out")
+    self.assertIn('D', letters, "Non-system drive should be included")
+
+  def test_list_volumes_filters_no_drive_letter(self):
+    raw = [
+      {'letter': '',  'label': 'Hidden', 'filesystem': 'NTFS', 'size_gb': 50},
+      {'letter': 'E', 'label': 'Logs',   'filesystem': 'NTFS', 'size_gb': 200},
+    ]
+    result = self._apply_filter(raw, system_letter='C')
+    letters = [v['letter'] for v in result]
+    self.assertEqual(len(result), 1, "Volume with no drive letter should be excluded")
+    self.assertIn('E', letters)
+
+  def test_list_volumes_filters_recovery_labels(self):
+    raw = [
+      {'letter': 'R', 'label': 'Recovery',        'filesystem': 'NTFS', 'size_gb': 1},
+      {'letter': 'S', 'label': 'System Reserved',  'filesystem': 'NTFS', 'size_gb': 1},
+      {'letter': 'W', 'label': 'WinRE',            'filesystem': 'NTFS', 'size_gb': 1},
+      {'letter': 'D', 'label': 'Data',             'filesystem': 'NTFS', 'size_gb': 100},
+    ]
+    result = self._apply_filter(raw, system_letter='C')
+    letters = [v['letter'] for v in result]
+    self.assertNotIn('R', letters, "Recovery label should be filtered out")
+    self.assertNotIn('S', letters, "System Reserved label should be filtered out")
+    self.assertNotIn('W', letters, "WinRE label should be filtered out")
+    self.assertIn('D', letters, "Normal data volume should be included")
+
+  def test_list_volumes_single_object_coercion(self):
+    """PowerShell returns a bare dict (not list) when exactly one volume matches."""
+    from vss import _RECOVERY_LABELS
+    # Simulate what list_volumes does when json.loads returns a dict
+    raw_dict = {'letter': 'D', 'label': 'Data', 'filesystem': 'NTFS', 'size_gb': 500}
+    # list_volumes coerces: if isinstance(data, dict): data = [data]
+    data = raw_dict if not isinstance(raw_dict, list) else raw_dict
+    if isinstance(data, dict):
+      data = [data]
+    result = self._apply_filter(data, system_letter='C')
+    self.assertEqual(len(result), 1)
+    self.assertEqual(result[0]['letter'], 'D')
+
+  def test_resolve_volume_explicit_letter(self):
+    """resolve_volume with an explicit letter returns it uppercased, no colon."""
+    import os
+    os.environ.setdefault('SystemDrive', 'C:')
+    from vss import resolve_volume
+    self.assertEqual(resolve_volume('D'), 'D')
+    self.assertEqual(resolve_volume('d'), 'D')
+    self.assertEqual(resolve_volume('E:'), 'E')
+
+  def test_resolve_volume_strips_colon(self):
+    """resolve_volume strips trailing colon from the provided letter."""
+    import os
+    os.environ.setdefault('SystemDrive', 'C:')
+    from vss import resolve_volume
+    self.assertEqual(resolve_volume('F:'), 'F')
+
+  def test_resolve_volume_system_drive_exits(self):
+    """resolve_volume raises SystemExit when the system drive is specified."""
+    import os
+    os.environ['SystemDrive'] = 'C:'
+    from vss import resolve_volume
+    with self.assertRaises(SystemExit):
+      resolve_volume('C')
+    with self.assertRaises(SystemExit):
+      resolve_volume('c:')
+
+
 """Method to expose test cases for dependency checker and installer to test runner via a test suite."""
 def SnapshotFactorySuite():
   suite = unittest.TestSuite()

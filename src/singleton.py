@@ -46,6 +46,9 @@ class SingletonClass(object):
     AWS_S3_ENDPOINT_URL = None
     AWS_S3_PROFILE = None
 
+    """Global Variables for vss2s3 and s3tovss"""
+    VSS_VOLUME = None  # Target/source drive letter (e.g. 'D')
+
     """Dictionary of important quotas by API operation and Exception"""
     AWS_SERVICE_QUOTAS = {
       ("GetSnapshotBlock","ThrottlingException") : "L-C125AE42",
