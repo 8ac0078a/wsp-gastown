@@ -46,6 +46,12 @@ class SingletonClass(object):
     AWS_S3_ENDPOINT_URL = None
     AWS_S3_PROFILE = None
 
+    """Global Variables for WSP (vss2s3 / s3tovss)"""
+    VSS_SHADOW_ID = None          # GUID of the active VSS shadow copy
+    VSS_SHADOW_DEVICE_PATH = None  # Raw device path of the shadow copy
+    VSS_VOLUME_LETTER = None      # Drive letter being backed up / restored (e.g. "D")
+    WSP_LOG_FILE = None           # Path for detailed per-segment log output
+
     """Dictionary of important quotas by API operation and Exception"""
     AWS_SERVICE_QUOTAS = {
       ("GetSnapshotBlock","ThrottlingException") : "L-C125AE42",

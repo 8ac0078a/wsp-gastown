@@ -259,6 +259,25 @@ def arg_parse(args):
     fanout_parser.add_argument('device_path', help='File path to raw device for fanout snapshot distributution')
     fanout_parser.add_argument('destinations', help='File path to a .txt file listing all regions the snapshot distributution on separate lines')
 
+    vss2s3_parser = subparsers.add_parser('vss2s3', help='Creates a VSS shadow copy of a Windows volume and uploads it to S3 (Windows only)')
+    vss2s3_parser.add_argument('s3Bucket', help='Target S3 bucket name')
+    vss2s3_parser.add_argument('--volume', default=None, metavar='LETTER', help='Volume drive letter to back up (e.g. D). If omitted, user is prompted.')
+    vss2s3_parser.add_argument('-d', '--destination_region', default=None, help='AWS region where the S3 bucket exists. (default: origin region)')
+    vss2s3_parser.add_argument('-e', '--endpoint_url', default=None, help='Custom S3 endpoint URL. (default: none)')
+    vss2s3_parser.add_argument('-p', '--profile', default='default', help='AWS CLI profile name. (default: default)')
+    vss2s3_parser.add_argument('--resume', default=False, action='store_true', help='Resume a previously interrupted upload.')
+    vss2s3_parser.add_argument('--log', default=None, metavar='FILE', dest='log_file', help='Write detailed per-segment log to FILE.')
+
+    s3tovss_parser = subparsers.add_parser('s3tovss', help='Downloads a VSS snapshot from S3 and restores it to a Windows volume (Windows only)')
+    s3tovss_parser.add_argument('snapshot_prefix', help='S3 prefix of the snapshot to restore (e.g. vss-20260402-D.500)')
+    s3tovss_parser.add_argument('s3Bucket', help='Source S3 bucket name')
+    s3tovss_parser.add_argument('--volume', default=None, metavar='LETTER', help='Target volume drive letter (e.g. E). If omitted, user is prompted.')
+    s3tovss_parser.add_argument('-d', '--destination_region', default=None, help='AWS region where the S3 bucket exists. (default: origin region)')
+    s3tovss_parser.add_argument('-e', '--endpoint_url', default=None, help='Custom S3 endpoint URL. (default: none)')
+    s3tovss_parser.add_argument('-p', '--profile', default='default', help='AWS CLI profile name. (default: default)')
+    s3tovss_parser.add_argument('--resume', default=False, action='store_true', help='Resume a previously interrupted restore.')
+    s3tovss_parser.add_argument('--log', default=None, metavar='FILE', dest='log_file', help='Write detailed per-segment log to FILE.')
+
     args = parser.parse_args(args)
     return args
 
@@ -282,7 +301,7 @@ def setup_singleton(args):
 
     user_canonical_id = ""
     # If we don't use S3, we don't need to get canonical id, it's only used in validate_s3_bucket()
-    if args.command == "movetos3" or args.command == "getfroms3":
+    if args.command in ("movetos3", "getfroms3", "vss2s3", "s3tovss"):
         try:
             session=boto3.Session(profile_name=singleton.AWS_S3_PROFILE)
             s3 = session.client('s3', endpoint_url=singleton.AWS_S3_ENDPOINT_URL)
@@ -311,7 +330,7 @@ def setup_singleton(args):
         # In testing, I was able to get 450MB/s between N.Virginia and Australia/Tokyo.
         num_jobs = 27
 
-    if args.command == "movetos3":
+    if args.command in ("movetos3", "vss2s3", "s3tovss"):
         # In the S3 codepath, we don't use nested threadpools since we nest chunks inside segments. More threads makes sense here,
         # tested 128 as a good figure for single-region. Multi-region has higher latency, so multiply by 8 as well.
         num_jobs = num_jobs * 8
@@ -533,6 +552,42 @@ if __name__ == "__main__":
 
     elif command == "fanout":
         fanout(device_path=args.device_path, destination_regions=args.destinations)
+
+    elif command == "vss2s3":
+        from vss import vss2s3 as _vss2s3
+        if args.endpoint_url is not None:
+            singleton.AWS_S3_ENDPOINT_URL = args.endpoint_url
+            singleton.AWS_S3_PROFILE = args.profile
+        singleton.VSS_VOLUME_LETTER = args.volume
+        singleton.WSP_LOG_FILE = args.log_file
+        _vss2s3(
+            s3_bucket=args.s3Bucket,
+            volume_letter=args.volume,
+            destination_region=args.destination_region,
+            endpoint_url=args.endpoint_url,
+            profile=args.profile,
+            resume=args.resume,
+            log_file=args.log_file,
+        )
+
+    elif command == "s3tovss":
+        from vss import s3tovss as _s3tovss
+        if args.endpoint_url is not None:
+            singleton.AWS_S3_ENDPOINT_URL = args.endpoint_url
+            singleton.AWS_S3_PROFILE = args.profile
+        singleton.VSS_VOLUME_LETTER = args.volume
+        singleton.WSP_LOG_FILE = args.log_file
+        _s3tovss(
+            snapshot_prefix=args.snapshot_prefix,
+            s3_bucket=args.s3Bucket,
+            volume_letter=args.volume,
+            destination_region=args.destination_region,
+            endpoint_url=args.endpoint_url,
+            profile=args.profile,
+            resume=args.resume,
+            log_file=args.log_file,
+        )
+
     else:
         print("Unknown command: %s" % command)
         sys.exit(127) # Exit code for command not found. Script cannot run
