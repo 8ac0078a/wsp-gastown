@@ -24,6 +24,7 @@ sys.path.insert(1, f'{os.path.dirname(os.path.realpath(__file__))}/../src') #mak
 
 from main import install_dependencies, dependency_checker, version_cmp
 from snapshot_factory import generate_pattern_snapshot, check_pattern
+from vss import _parse_create_output
 
 """Method to expose test cases for dependency checker and installer to test runner via a test suite."""
 def DependencyCheckerSuite():
@@ -346,3 +347,68 @@ class TestSnapshotFactory(unittest.TestCase):
       TEST_MATRIX.append(test_case)
 
     self.run_test_matrix(TEST_MATRIX)
+
+
+def VssSuite():
+  suite = unittest.TestSuite()
+  suite.addTest(VssParseCreateOutput('test_typical_output'))
+  suite.addTest(VssParseCreateOutput('test_mixed_case'))
+  suite.addTest(VssParseCreateOutput('test_shadow_copy_10'))
+  suite.addTest(VssParseCreateOutput('test_missing_id'))
+  suite.addTest(VssParseCreateOutput('test_missing_path'))
+  suite.addTest(VssParseCreateOutput('test_empty_output'))
+  return suite
+
+
+class VssParseCreateOutput(unittest.TestCase):
+  """Unit tests for vss._parse_create_output (pure parsing, no vssadmin required)."""
+
+  # Typical vssadmin output on Windows Server 2019
+  TYPICAL_OUTPUT = (
+    "vssadmin 1.1 - Volume Shadow Copy Service administrative command-line tool\n"
+    "(C) Copyright 2001-2013 Microsoft Corp.\n\n"
+    "Successfully created shadow copy for 'D:\\'\n"
+    "    Shadow Copy ID: {AB12CD34-1234-5678-ABCD-1234567890AB}\n"
+    "    Shadow Copy Volume Name: \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\n"
+  )
+
+  def test_typical_output(self):
+    shadow_id, device_path = _parse_create_output(self.TYPICAL_OUTPUT)
+    self.assertEqual(shadow_id, "{AB12CD34-1234-5678-ABCD-1234567890AB}")
+    self.assertEqual(device_path, "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1")
+
+  def test_mixed_case(self):
+    output = (
+      "shadow copy id: {aaaabbbb-0000-1111-2222-333344445555}\n"
+      "shadow copy volume name: \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy99\n"
+    )
+    shadow_id, device_path = _parse_create_output(output)
+    self.assertEqual(shadow_id, "{aaaabbbb-0000-1111-2222-333344445555}")
+    self.assertEqual(device_path, "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy99")
+
+  def test_shadow_copy_10(self):
+    """Ensure double-digit shadow copy numbers parse correctly."""
+    output = (
+      "    Shadow Copy ID: {DEADBEEF-DEAD-BEEF-DEAD-BEEFDEADBEEF}\n"
+      "    Shadow Copy Volume Name: \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy10\n"
+    )
+    shadow_id, device_path = _parse_create_output(output)
+    self.assertEqual(shadow_id, "{DEADBEEF-DEAD-BEEF-DEAD-BEEFDEADBEEF}")
+    self.assertEqual(device_path, "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy10")
+
+  def test_missing_id(self):
+    output = "    Shadow Copy Volume Name: \\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1\n"
+    shadow_id, device_path = _parse_create_output(output)
+    self.assertIsNone(shadow_id)
+    self.assertEqual(device_path, "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1")
+
+  def test_missing_path(self):
+    output = "    Shadow Copy ID: {AB12CD34-1234-5678-ABCD-1234567890AB}\n"
+    shadow_id, device_path = _parse_create_output(output)
+    self.assertEqual(shadow_id, "{AB12CD34-1234-5678-ABCD-1234567890AB}")
+    self.assertIsNone(device_path)
+
+  def test_empty_output(self):
+    shadow_id, device_path = _parse_create_output("")
+    self.assertIsNone(shadow_id)
+    self.assertIsNone(device_path)
