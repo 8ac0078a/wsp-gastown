@@ -16,6 +16,7 @@
 
 import argparse
 import os.path
+import platform
 import subprocess
 import sys
 from os.path import exists
@@ -427,6 +428,10 @@ if __name__ == "__main__":
     if args is None:
         print("\nExiting")
         sys.exit(1) # Exit code for invalid parameters. Script cannot run
+
+    if args.command in ("vss2s3", "s3tovss") and platform.system() != "Windows":
+        print("Error: This command is only supported on Windows.", file=sys.stderr)
+        sys.exit(1)
 
     timestamp_file = f"{os.path.dirname(os.path.realpath(__file__))}/../.fsp_deps_timestamp"
     if exists(timestamp_file):
