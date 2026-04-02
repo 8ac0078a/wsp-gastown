@@ -84,3 +84,6 @@ cover/
 state.json
 CLAUDE.md
 CLAUDE.local.md
+
+# Beads server metadata (must not be deleted by polecats)
+.beads/metadata.json
