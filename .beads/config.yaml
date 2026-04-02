@@ -52,3 +52,7 @@
 # - linear.api-key
 # - github.org
 # - github.repo
+
+prefix: wsp
+issue-prefix: wsp
+dolt.idle-timeout: "0"
