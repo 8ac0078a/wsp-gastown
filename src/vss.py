@@ -393,7 +393,17 @@ def _upload_vss_segment(shadow_device_path, segment, snapshot_id, vol_size_gb,
 
     session = boto3.Session(profile_name=profile)
     s3 = session.client("s3", region_name=region, endpoint_url=endpoint_url)
-    s3.put_object(Body=compressed, Bucket=s3_bucket, Key=s3_key)
+
+    retry_count = 0
+    upload_start = time.perf_counter()
+    while True:
+        try:
+            s3.put_object(Body=compressed, Bucket=s3_bucket, Key=s3_key)
+            break
+        except Exception:
+            retry_count += 1
+            time.sleep(min(2 ** retry_count, 30))
+    upload_duration = time.perf_counter() - upload_start
 
     if log_file:
         try:
@@ -402,7 +412,8 @@ def _upload_vss_segment(shadow_device_path, segment, snapshot_id, vol_size_gb,
                     f"{datetime.utcnow().isoformat()}Z  "
                     f"offset={offset}  blocks={block_count}  "
                     f"raw={len(data)}  compressed={len(compressed)}  "
-                    f"checksum={checksum}  key={s3_key}\n"
+                    f"checksum={checksum}  duration={upload_duration:.3f}s  "
+                    f"retries={retry_count}  key={s3_key}\n"
                 )
         except OSError:
             pass
